@@ -8,7 +8,7 @@ Handles new users and prompts them with a verification dialog.
 
 Install DPP
 
-`git clone https://github.com/brainboxdotcc/DPP && cd DPP && mkdir build && cmake .. && make -j8 && sudo make install && cd ../../`
+`git clone https://github.com/brainboxdotcc/DPP && cd DPP && mkdir build && cd build && cmake .. && make -j8 && sudo make install && cd ../../`
 
 1. Download repository
 
@@ -41,3 +41,5 @@ cmake .. && make
 - [ ] Cache the new role that is created
 - [ ] Dialog to add a student's email to a mailing list
 - [ ] Add DPP as submodule to fix instructions
+- [ ] If not sending an ephemeral message, check user pressing the verify button?
+- [ ] Further diagnose raspberrypi oddities
