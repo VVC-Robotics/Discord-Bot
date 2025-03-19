@@ -1,4 +1,3 @@
-#include <dpp/dpp.h>
 #include <cstdlib>
 #include <string>
 #include <string.h>
@@ -8,6 +7,9 @@
 #include <algorithm>
 #include <stdio.h>
 #include <fstream>
+#include <format>
+
+#include <dpp/dpp.h>
 
 struct Guild : public dpp::guild {
     Guild() {}
@@ -18,9 +20,30 @@ struct Program {
     dpp::cluster bot;
     std::map<dpp::snowflake, Guild> guilds;
     dpp::command_completion_event_t complete_handler;
+    std::function<void(const dpp::ready_t&)> ready_handler;
 
     Program() {
         complete_handler = std::bind(&Program::handle_confirm, this, std::placeholders::_1);
+        ready_handler = std::bind(&Program::handle_ready, this, std::placeholders::_1);
+    }
+
+    int load() {
+        auto token = load_token();
+
+        if (token.size() < 1) handle_error("No token in TOKEN file");
+
+        new (&bot) dpp::cluster(token, dpp::i_guilds | dpp::i_default_intents | dpp::i_guild_members | dpp::i_message_content);
+
+        bot.on_ready(ready_handler);
+
+        logs("Connecting");
+
+        return 0;
+    }
+
+    int run() {
+        bot.start(dpp::st_wait);
+        return 0;
     }
 
     void safe_exit(int errcode = 0) {
@@ -109,6 +132,10 @@ struct Program {
         return 0;
     }
 
+    void handle_ready(const dpp::ready_t &r) {
+        logs("Connected");
+    }
+
     void add_role(dpp::snowflake guild, dpp::snowflake user, dpp::snowflake role) {
         log("Adding role %lu to user %lu in guild %lu\n", role, user, guild);
 
@@ -164,27 +191,16 @@ struct Program {
 
 int main() {
     using namespace dpp;
+
     Program prog;
-    
-    auto token = prog.load_token();
-    if (token.size() < 1) prog.handle_error("No token in TOKEN file");
-    //prog.log("Token: %s\n", token.c_str());
-
-    new (&prog.bot) cluster(token, i_guilds | i_default_intents | i_guild_members | i_message_content);
+    prog.load();    
     auto &bot = prog.bot;
-    
-    prog.logs("Starting bot");
-
-    bot.on_ready([&](auto event){ prog.logs("Bot started"); });
-
-    //bot.set_presence(presence(presence_status::ps_online, dpp::activity(activity_type::at_watching, "over this server")))
-
-    snowflake verification_channel = 1351751824587100270, bot_id = 770713966636695602, role_id = 1351755417323044948;
 
     bot.on_guild_member_add([&](const guild_member_add_t &guild_member_add) {
         auto &guild = guild_member_add.adding_guild;
         auto &user = guild_member_add.added;
-        prog.create_welcome_message(user.get_mention(), verification_channel);
+        auto &channel_id = guild.system_channel_id;
+        prog.message_create(prog.create_welcome_message(user.get_mention(), channel_id));
     });
 
     bot.on_message_create([&](const message_create_t &message_create) {
@@ -194,7 +210,6 @@ int main() {
         prog.logs(message_create.msg);
         if (message_create.msg.content == "devtest")
             prog.message_create(prog.create_welcome_message(message_create.msg.author.get_mention(), message_create.msg.channel_id));
-            //message_create.reply(prog.create_welcome_message(user.get_mention(), msg.channel_id), true, prog.complete_handler);
     });
 
     bot.on_button_click([&](const button_click_t &button_click) {
@@ -210,11 +225,11 @@ int main() {
 
         prog.log("Button clicked: %s by %lu\n", id.c_str(), user_id);
 
-        if (id == "verify_button")
+        if (id == "verify_button") {
             prog.add_or_create_role(guild_id, user_id, "Verified");
-
+            button_click.reply(ir_update_message, std::format("You are now verified {}!", user.get_mention()));
+        }
     });
 
-    bot.start(dpp::st_wait);
-    return 0;
+    return prog.run();
 }
