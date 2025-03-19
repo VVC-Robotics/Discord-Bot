@@ -17,6 +17,11 @@ struct Guild : public dpp::guild {
 struct Program {
     dpp::cluster bot;
     std::map<dpp::snowflake, Guild> guilds;
+    dpp::command_completion_event_t complete_handler;
+
+    Program() {
+        complete_handler = std::bind(&Program::handle_confirm, this, std::placeholders::_1);
+    }
 
     void safe_exit(int errcode = 0) {
         exit(errcode);
@@ -69,10 +74,16 @@ struct Program {
     }
 
     void message_create(const dpp::message &m) {
-        bot.message_create(m, [&](dpp::confirmation_callback_t e) {
-            if (e.is_error())
-                logs(e.get_error().message);
-        });
+        bot.message_create(m, complete_handler);
+    }
+
+    void handle_confirm(const dpp::confirmation_callback_t &e) {
+        if (e.is_error())
+            logs(e.get_error().message);
+    }
+
+    void add_role(dpp::snowflake guild, dpp::snowflake user, dpp::snowflake role) {
+        bot.guild_member_add_role(guild, user, role, complete_handler);
     }
 };
 
@@ -95,7 +106,7 @@ int main() {
 
     //bot.set_presence(presence(presence_status::ps_online, dpp::activity(activity_type::at_watching, "over this server")))
 
-    snowflake verification_channel = 1351751824587100270;
+    snowflake verification_channel = 1351751824587100270, bot_id = 770713966636695602, role_id = 0;
 
     bot.on_guild_member_add([&](const guild_member_add_t &guild_member_add) {
         auto &guild = guild_member_add.adding_guild;
@@ -114,6 +125,20 @@ int main() {
 
     bot.on_message_reaction_add([&](const message_reaction_add_t &message_reaction_add) {
         auto &channel = message_reaction_add.channel_id;
+        auto &user = message_reaction_add.reacting_user;
+
+        if (channel != verification_channel)
+            return;
+
+        if (message_reaction_add.message_author_id != bot_id)
+            return;
+
+        if (!message_reaction_add.reacting_guild.id)
+            return;
+
+        auto &guild = message_reaction_add.reacting_guild;
+
+        bot.guild_member_add_role(guild.id, user.id, role_id);
     });
 
     bot.start(dpp::st_wait);
