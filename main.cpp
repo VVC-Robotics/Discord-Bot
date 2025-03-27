@@ -8,6 +8,8 @@
 #include <stdio.h>
 #include <fstream>
 #include <format>
+#include <mutex>
+#include <condition_variable>
 
 #include <dpp/dpp.h>
 
@@ -26,6 +28,61 @@ namespace util {
             if (v == value)
                 return &v;
         return (value_type*)(nullptr);
+    }
+
+    struct hold;
+
+    struct wait_for {
+        bool done;
+        std::mutex m;
+        std::condition_variable cv;
+
+        wait_for():done(false){}
+
+        void notify() {
+            std::unique_lock<std::mutex> lock(m);
+            done = true;
+            //printf("notify     %p\n", this);
+            cv.notify_all();
+        }
+
+        void wait() {
+            //printf("wait       %p\n", this);
+            std::unique_lock<std::mutex> lock(m);
+            while (!done) cv.wait(lock);
+            //printf("complete   %p\n", this);
+        }
+
+        util::hold hold();
+    };
+
+
+    struct auto_wait : public wait_for {
+        auto_wait() {
+            //printf("auto_wait  %p\n", this);
+        }
+
+        ~auto_wait() {
+            wait();
+            //printf("~auto_wait %p\n", this);
+        }
+    };
+
+    struct hold {
+        hold(wait_for *w):w(w) { 
+            //printf("auto_hold  %p\n", w);
+        }
+        hold(wait_for &w):hold(&w) { }
+        hold(auto_wait &w):hold(&w) { }
+        ~hold() {
+            w->notify();
+            //printf("~auto_hold %p\n", w);
+        }
+        wait_for *w;
+    };
+
+    util::hold util::wait_for::hold() {
+        return { this };
     }
 }
 
@@ -270,8 +327,16 @@ struct Program {
 
     virtual void guild_channel_added(std::pair<const dpp::snowflake, GuildChannelData> &pair) {
         auto &data = pair.second;
+        auto *channel = data.channel;
+        auto *guild = data.guild;
 
-        log("Cached gchannel\n");
+        assert(channel && "Channel null\n");
+        assert(guild && "Guild null\n");        
+
+        data.id = data.channel->id;
+        data.name = data.channel->name;
+
+        log("Cached gchannel %p %p\n", data.guild, data.channel);
     }
 
     virtual void role_added(std::pair<const dpp::snowflake, RoleData> &pair) {
@@ -297,12 +362,14 @@ struct Program {
     }
 
     UserData *get_user(const dpp::snowflake &user_id) {
+        //log("get_user %lu\n", user_id);
         if (!users.contains(user_id))
             add_user(user_id);
         return util::get_or_null(users, user_id);
     }
 
-    GuildData *get_guild(const dpp::snowflake guild_id) { 
+    GuildData *get_guild(const dpp::snowflake guild_id) {
+        //log("get_guild %lu\n", guild_id);
         if (!guilds.contains(guild_id))
             add_guild(guild_id);
         return util::get_or_null(guilds, guild_id);
@@ -318,6 +385,7 @@ struct Program {
 
     GuildUserData *get_guild_user(const dpp::guild_member &user) {
         auto *guild_data = get_guild(user.guild_id);
+        //log("get_guild_user %lu %p %lu\n", user.guild_id, guild_data, user.user_id);
         if (!guild_data) return nullptr;
         return get_guild_user(guild_data, user.user_id);
     }
@@ -327,26 +395,37 @@ struct Program {
     }
 
     void add_channel(const dpp::snowflake channel_id, dpp::channel &channel) {
+        assert(channel_id && "channel_id should not be 0 here\n");
         channel_added(*channels.emplace(std::make_pair(channel_id, channel)).first);
     }
 
     void add_guild(const dpp::snowflake guild_id, dpp::guild &guild) {
+        assert(guild_id && "guild_id should not be 0 here\n");
         guild_added(*guilds.emplace(std::make_pair(guild_id, guild)).first);
     }
 
     void add_user(const dpp::snowflake &user_id, dpp::user &user) {
+        assert(user_id && "user_id should not be 0 here\n");
+        //log("add_user %lu %s\n", user_id, user.username.c_str());
         user_added(*users.emplace(std::make_pair(user_id, user)).first);
     }
 
     void add_guild_user(GuildData *guild_data, UserData *user_data, const dpp::snowflake &user_id, dpp::guild_member &guild_member) {
+        assert(user_id && "user_id should not be 0 here\n");
         guild_user_added(*guild_data->users.emplace(std::make_pair(user_id, GuildUserData(user_data, guild_data, guild_member))).first);
     }
 
     void add_guild_channel(GuildData *guild_data, ChannelData *channel_data, const dpp::snowflake &channel_id) {
+        assert(channel_id && "channel_id should not be 0 here\n");
         guild_channel_added(*guild_data->channels.emplace(std::make_pair(channel_id, GuildChannelData(guild_data, channel_data))).first);
     }
 
     void add_guild_channel(GuildData *guild, const dpp::snowflake &channel_id) {
+        if (!channel_id) {
+            logs("Channel id is 0");
+            return;
+        }
+
         auto *channel = get_channel(channel_id);
         
         if (!channel) {
@@ -383,32 +462,55 @@ struct Program {
     }
 
     void add_guild_user(const dpp::snowflake guild_id, const dpp::snowflake user_id) {
+        //log("add_guild_user %lu %lu\n", guild_id, user_id);
+        util::auto_wait w;
         bot.guild_get_member(guild_id, user_id, [&,guild_id,user_id](dpp::confirmation_callback_t e) {
-            if (e.is_error()) return;
+            util::hold h(w);
+            if (e.is_error()) { 
+                handle_apierror(e.get_error(), std::format("guild: {} user: {}", (uint64_t)guild_id, (uint64_t)user_id));
+                return;
+            }
 
             add_guild_user(std::get<dpp::guild_member>(e.value));
+            //logs("done add_guild_user");
         });
     }
 
-    void add_guild(dpp::snowflake guild_id) {
+    void add_guild(const dpp::snowflake guild_id) {
+        util::auto_wait w;
         bot.guild_get(guild_id, [&,guild_id](dpp::confirmation_callback_t e) {
-            if (e.is_error()) return;
+            util::hold h(w);
+            if (e.is_error()) { 
+                handle_apierror(e.get_error(), std::format("guild: {}", (uint64_t)guild_id));
+                return;
+            }
 
             add_guild(guild_id, std::get<dpp::guild>(e.value));
         });
     }
 
     void add_user(const dpp::snowflake user_id) {
+        //log("add_user %lu\n", user_id);
+        util::auto_wait w;
         bot.user_get(user_id, [&,user_id](dpp::confirmation_callback_t e) {
-            if (e.is_error()) return;
+            util::hold h(w); 
+            if (e.is_error()) { 
+                handle_apierror(e.get_error(), std::format("user: {}", (uint64_t)user_id));
+                return;
+            }
 
-            add_user(user_id, std::get<dpp::user>(e.value));
+            add_user(user_id, std::get<dpp::user_identified>(e.value));
         });
     }
 
     void add_channel(const dpp::snowflake channel_id) {
+        util::auto_wait w;
         bot.channel_get(channel_id, [&,channel_id](dpp::confirmation_callback_t e) {
-            if (e.is_error()) return;
+            util::hold h(w);
+            if (e.is_error()) { 
+                handle_apierror(e.get_error(), std::format("channel: {}", (uint64_t)channel_id));
+                return;
+            }
 
             add_channel(channel_id, std::get<dpp::channel>(e.value));
         });
@@ -419,10 +521,12 @@ struct Program {
         bot.message_create(m, complete_handler);
     }
 
-    int handle_apierror(const dpp::error_info &e) {
+    int handle_apierror(const dpp::error_info &e, std::string extra = "") {
         int sum = log("Error in confirmation\nError brief: %s\nError body: %s\n", e.message.c_str(), e.human_readable.c_str());
         for (const auto &s : e.errors)
             sum += logs(s.reason);
+        if (extra.size())
+            sum += log("Details: %s\n", extra.c_str());
         return sum;
     }
 
@@ -485,7 +589,11 @@ struct Program {
         auto &id = e.custom_id;
         auto &command = e.command;
 
-        auto *user = get_user(e.command.get_issuing_user());
+        logs("button click");
+
+        const auto &issuer = e.command.get_issuing_user();
+
+        auto *user = get_user(issuer);
 
         log("Button clicked \"%s\" by %s\n", id.c_str(), user ? user->username.c_str() : "undefined");
 
