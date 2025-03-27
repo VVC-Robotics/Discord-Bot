@@ -130,6 +130,7 @@ struct Program {
     std::function<void(const dpp::ready_t&)> ready_handler;
     std::function<void(const dpp::guild_member_add_t&)> guild_user_add_handler;
     std::function<void(const dpp::message_create_t&)> message_handler;
+    std::function<void(const dpp::button_click_t&)> button_click_handler;
     using completion_callback = std::function<void()>;
 
     Program() { }
@@ -139,6 +140,7 @@ struct Program {
         ready_handler = std::bind(&Program::handle_ready, this, std::placeholders::_1);
         guild_user_add_handler = std::bind(&Program::handle_guild_user_add, this, std::placeholders::_1);
         message_handler = std::bind(&Program::handle_message, this, std::placeholders::_1);
+        button_click_handler = std::bind(&Program::handle_button_click, this, std::placeholders::_1);
 
         return 0;
     }
@@ -153,10 +155,9 @@ struct Program {
         new (&bot) dpp::cluster(token, dpp::i_guilds | dpp::i_default_intents | dpp::i_guild_members | dpp::i_message_content);
 
         bot.on_ready(ready_handler);
-
         bot.on_guild_member_add(guild_user_add_handler);
-
         bot.on_message_create(message_handler);
+        bot.on_button_click(button_click_handler);
 
         logs("Connecting");
 
@@ -315,6 +316,12 @@ struct Program {
         return get_guild(guild.id);
     }
 
+    GuildUserData *get_guild_user(const dpp::guild_member &user) {
+        auto *guild_data = get_guild(user.guild_id);
+        if (!guild_data) return nullptr;
+        return get_guild_user(guild_data, user.user_id);
+    }
+
     UserData *get_user(const dpp::user &user) {
         return get_user(user.id);
     }
@@ -408,7 +415,7 @@ struct Program {
     }
 
     void message_create(const dpp::message &m) {
-        logs(m.content);
+        //logs(m.content);
         bot.message_create(m, complete_handler);
     }
 
@@ -474,6 +481,36 @@ struct Program {
             message_create(create_welcome_message(e.msg.author.get_mention(), e.msg.channel_id));
     }
 
+    void handle_button_click(const dpp::button_click_t &e) {
+        auto &id = e.custom_id;
+        auto &command = e.command;
+
+        auto *user = get_user(e.command.get_issuing_user());
+
+        log("Button clicked \"%s\" by %s\n", id.c_str(), user ? user->username.c_str() : "undefined");
+
+        if (id == "verify_button") on_user_verify(e);
+    }
+
+    virtual void on_user_verify(const dpp::button_click_t &e) {
+        auto &command = e.command;
+        if (!command.is_guild_interaction()) {
+            logs("User verification in guilds only");
+            return;
+        }
+
+        auto &user = command.member;
+        auto *guild_user = get_guild_user(user);
+        
+        if (!guild_user) {
+            logs("No guild user associated with interaction");
+            return;
+        }
+
+        add_or_create_role(guild_user, "Verified");
+        e.reply(dpp::ir_update_message, std::format("You are now verified {}!", user.get_mention()));
+    }
+
     void add_role(dpp::snowflake guild, dpp::snowflake user, dpp::snowflake role) {
         log("Adding role %lu to user %lu in guild %lu\n", role, user, guild);
 
@@ -506,6 +543,10 @@ struct Program {
         });
     }
 
+    void add_or_create_role(GuildUserData *user, std::string role_name) {
+        add_or_create_role(user->guild->id, user->user->id, role_name);
+    }
+
     dpp::message create_welcome_message(std::string user_mention, dpp::snowflake channel_id) {
         auto m = dpp::message();
 
@@ -532,26 +573,6 @@ int main() {
 
     Program prog;
     prog.load();    
-    auto &bot = prog.bot;
-
-    bot.on_button_click([&](const button_click_t &button_click) {
-        auto &id = button_click.custom_id;
-        auto &command = button_click.command;
-
-        if (!command.is_guild_interaction())
-            return;
-
-        auto &user = button_click.command.member;
-        auto user_id = user.user_id;
-        auto guild_id = user.guild_id;
-
-        prog.log("Button clicked: %s by %lu\n", id.c_str(), user_id);
-
-        if (id == "verify_button") {
-            prog.add_or_create_role(guild_id, user_id, "Verified");
-            button_click.reply(ir_update_message, std::format("You are now verified {}!", user.get_mention()));
-        }
-    });
 
     return prog.run();
 }
