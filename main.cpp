@@ -11,14 +11,80 @@
 
 #include <dpp/dpp.h>
 
-struct Guild : public dpp::guild {
-    Guild() {}
-    Guild(const dpp::guild &base):dpp::guild(base) {}
+struct UserData;
+struct RoleData;
+struct GuildUserData;
+struct GuildData;
+
+struct UserData {
+    dpp::user cached;
+
+    dpp::snowflake id;
+    std::string username;
+
+    UserData() { }
+    UserData(const dpp::user &user):cached(user) { }
+};
+
+struct RoleData {
+    dpp::role cached;
+
+    dpp::snowflake id;
+    std::string name;
+
+    RoleData():id(0) {}
+    RoleData(const dpp::role &role):cached(role) { }
+
+    friend bool operator==(const RoleData &a, const std::string &b) {
+        return a.name == b;
+    }
+};
+
+struct GuildUserData {
+    UserData *user;
+    GuildData *guild;
+
+    GuildUserData():user(0),guild(0) { }
+    GuildUserData(UserData *user, GuildData *guild):user(user),guild(guild) { }
+};
+
+struct GuildChannelData {
+    dpp::channel cached;
+    GuildData *guild;
+
+    std::string name;
+    dpp::snowflake id;
+
+    GuildChannelData() { }
+    GuildChannelData(const dpp::channel &channel):cached(channel) { }
+};
+
+struct GuildData {
+    dpp::guild cached;
+
+    std::map<dpp::snowflake, RoleData> roles;
+
+    GuildChannelData *welcome_channel;
+    bool verify_ephemeral;
+
+    std::string name;
+    dpp::snowflake id;
+
+    RoleData* get_role(const std::string &text) {
+        for (auto &[s, r] : roles)
+            if (r == text)
+                return &r;
+        return nullptr;
+    }
+
+    GuildData() { }
+    GuildData(const dpp::guild &guild):cached(guild),verify_ephemeral(1) { }
 };
 
 struct Program {
     dpp::cluster bot;
-    std::map<dpp::snowflake, Guild> guilds;
+    std::map<dpp::snowflake, GuildData> guilds;
+    std::map<dpp::snowflake, GuildChannelData> channels;
     dpp::command_completion_event_t complete_handler;
     std::function<void(const dpp::ready_t&)> ready_handler;
 
@@ -96,21 +162,80 @@ struct Program {
         return logs(m.components) + log("[%lu] %s \"%s\"\n", m.author.id, m.author.username.c_str(), m.content.c_str());
     }
 
-    virtual void guild_added(std::pair<dpp::snowflake, Guild&> pair) {
+    virtual void guild_added(std::pair<const dpp::snowflake, GuildData> &pair) {
+        auto &data = pair.second;
+        auto &guild = data.cached;
+
+        auto id = data.id = guild.id;
+        auto name = data.name = guild.name;
+
+        auto *welcome_channel = data.welcome_channel = get_channel(guild.system_channel_id);
+        
+        log("Cached guild   [%lu] %s\n", id, name.c_str());
+    }
+
+    virtual void channel_added(std::pair<const dpp::snowflake, GuildChannelData> &pair) {
+        auto &data = pair.second;
+        auto &channel = data.cached;
+
+        auto id = data.id = channel.id;
+        auto name = data.name = channel.name;
+
+        auto *guild = data.guild = get_guild(channel.guild_id);
+
+        log("Cached channel [%lu] %s\n", id, name.c_str());
+    }    
+
+    virtual void role_added(std::pair<const dpp::snowflake, RoleData> &pair) {
 
     }
 
-    void add_guild(dpp::snowflake guild_id) {
-        bot.guild_get(guild_id, [&](dpp::confirmation_callback_t e) {
+    template<typename iterable, typename kv, typename ret = iterable::mapped_type>
+    ret *get_or_null(iterable &it, kv &k) {
+        auto end = it.end();
+        //auto iter = std::find(it.begin(), end, k);
+        auto iter = it.find(k);
+        if (iter == end) return (ret*)(nullptr);
+        return &(iter->second);
+    }
+
+    GuildChannelData *get_channel(const dpp::snowflake channel_id) {
+        if (!channels.contains(channel_id))
+            add_channel(channel_id);
+        return get_or_null(channels, channel_id);
+    }
+
+    GuildData *get_guild(const dpp::snowflake guild_id) { 
+        if (!guilds.contains(guild_id))
+            add_guild(guild_id);
+        return get_or_null(guilds, guild_id);
+    }
+
+    void add_channel(const dpp::snowflake channel_id, dpp::channel &channel) {
+        channel_added(*channels.emplace(std::make_pair(channel_id, channel)).first);
+    }
+
+    void add_channel(const dpp::snowflake channel_id) {
+        bot.channel_get(channel_id, [&,channel_id](dpp::confirmation_callback_t e) {
             if (e.is_error()) return;
 
-            dpp::guild &v = std::get<dpp::guild>(e.value);
+            add_channel(channel_id, std::get<dpp::channel>(e.value));
+        });
+    }
 
-            if (guilds.contains(v.id)) return;
-            
-            guilds[v.id] = Guild(v);
+    void add_guild(const dpp::snowflake guild_id, dpp::guild &guild) {
+        guild_added(*guilds.emplace(std::make_pair(guild_id, guild)).first);
+    }
 
-            guild_added({v.id, guilds[v.id]});
+    void add_guild(std::pair<const dpp::snowflake, dpp::guild> &pair) {
+        add_guild(pair.first, pair.second);
+    }
+
+    void add_guild(dpp::snowflake guild_id) {
+        bot.guild_get(guild_id, [&,guild_id](dpp::confirmation_callback_t e) {
+            if (e.is_error()) return;
+
+            add_guild(guild_id, std::get<dpp::guild>(e.value));
         });
     }
 
@@ -134,6 +259,18 @@ struct Program {
 
     void handle_ready(const dpp::ready_t &r) {
         logs("Connected");
+
+        bot.current_user_get_guilds([&](dpp::confirmation_callback_t e) {
+            if (e.is_error()) { handle_apierror(e.get_error()); return; }
+
+            auto &guildmap = std::get<dpp::guild_map>(e.value);
+            
+            log("Handling %lu guilds\n", guildmap.size());
+
+            std::for_each(guildmap.begin(), guildmap.end(), [&](auto &pair){ 
+                add_guild(pair.first); // dpp::guild_map is returned incomplete, make a full request for guild data
+            });
+        });
     }
 
     void add_role(dpp::snowflake guild, dpp::snowflake user, dpp::snowflake role) {
