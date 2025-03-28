@@ -3,3 +3,4 @@ TOKEN
 *.out
 *.o
 build
+*.json

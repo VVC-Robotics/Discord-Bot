@@ -12,6 +12,65 @@
 #include <condition_variable>
 #include <signal.h>
 
+#include <dpp/json.h>
+#include <dpp/export.h>
+#include <dpp/version.h>
+#include <dpp/snowflake.h>
+#include <dpp/json_fwd.h>
+
+namespace {
+
+struct our_snowflake : public dpp::snowflake {
+    our_snowflake(const dpp::snowflake &f):dpp::snowflake(f){}
+    our_snowflake(dpp::snowflake &f):dpp::snowflake(f) {}
+    our_snowflake(dpp::snowflake &&f):dpp::snowflake(f) {}
+    our_snowflake(){}
+
+    constexpr our_snowflake &operator=(const dpp::snowflake &rhs) {
+        *(dpp::snowflake*)this = rhs;
+        return *this;
+    }
+
+    constexpr our_snowflake &operator=(dpp::snowflake &&rhs) {
+        *(dpp::snowflake*)this = rhs;
+        return *this;
+    }
+
+    operator nlohmann::json() = delete;
+
+    friend bool operator==(const our_snowflake &a, const our_snowflake &b) {
+        return ((dpp::snowflake)a) == ((dpp::snowflake)b);
+    }
+
+    friend bool operator==(const our_snowflake &a, const dpp::snowflake &b) {
+        return ((dpp::snowflake)a) == b;
+    }
+};
+
+}
+    
+NLOHMANN_JSON_NAMESPACE_BEGIN
+
+template<>
+struct adl_serializer<our_snowflake> {
+    static void from_json(const nlohmann::json &j, our_snowflake &value) {
+        if (j.is_string()) {
+            value = our_snowflake(j.template get<std::string>());
+        } else
+        if (j.is_number()) {
+            value = our_snowflake(j.template get<uint64_t>());
+        } else {
+            value = our_snowflake(0);
+        }
+    }
+
+    static void to_json(nlohmann::json &j, const our_snowflake &value) {
+        j = value.operator uint64_t();
+    }
+};
+
+NLOHMANN_JSON_NAMESPACE_END
+
 #include <dpp/dpp.h>
 
 namespace util {
@@ -56,7 +115,6 @@ namespace util {
 
         util::hold hold();
     };
-
 
     struct auto_wait : public wait_for {
         auto_wait() {
@@ -142,31 +200,44 @@ struct ChannelData {
 };
 
 struct GuildChannelData {
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(GuildChannelData, id, bot_allowed);
+
     ChannelData *channel;
     GuildData *guild;
 
     std::string name;
-    dpp::snowflake id;
+    our_snowflake id;
 
-    GuildChannelData():guild(0),channel(0) { }
-    GuildChannelData(GuildData *guild_data, ChannelData *channel_data):guild(guild_data),channel(channel_data) { }
+    bool bot_allowed;
+
+    GuildChannelData():guild(0),channel(0),bot_allowed(1) { }
+    GuildChannelData(GuildData *guild_data, ChannelData *channel_data):guild(guild_data),channel(channel_data),bot_allowed(1) { }
 };
 
 struct GuildData {
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(GuildData, id, name, verify_ephemeral, interact_ephemeral, welcome_channel, verify_role);
+
     dpp::guild cached;
 
     std::map<dpp::snowflake, GuildRoleData> roles;
     std::map<dpp::snowflake, GuildUserData> users;
     std::map<dpp::snowflake, GuildChannelData> channels;
 
-    GuildChannelData *welcome_channel;
+    our_snowflake welcome_channel;
+    our_snowflake verify_role;
+
     bool verify_ephemeral;
+    bool interact_ephemeral;
 
     std::string name;
-    dpp::snowflake id;
+    our_snowflake id;
 
     GuildRoleData* get_role(const std::string &text) {
         return util::get_by_value_or_null(roles, text);
+    }
+
+    GuildRoleData* get_role(const dpp::snowflake &role_id) {
+        return util::get_or_null(roles, role_id);
     }
 
     GuildUserData* get_user(const dpp::snowflake &user_id) {
@@ -178,16 +249,134 @@ struct GuildData {
     }
 
     GuildData() { }
-    GuildData(const dpp::guild &guild):cached(guild),verify_ephemeral(1) { }
+    GuildData(const dpp::guild &guild):cached(guild),verify_ephemeral(1),interact_ephemeral(1) { }
 };
 
-struct Program {
-    dpp::cluster bot;
+struct ConfigData {
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(ConfigData, token_file, token, config_data_file, bot_data_file, pool_size);
+
+    std::string token_file;
+    std::string token;
+
+    std::string bot_data_file;
+    std::string config_data_file;
+
+    uint32_t pool_size;
+
+    int load_config() {
+        if (!config_data_file.size()) return log_config("No path for config data\n");
+
+        std::ifstream file(config_data_file);
+
+        if (!file.is_open()) {
+            log_config("No config data found, creating\n");
+            return save_config();
+        } 
+
+        nlohmann::json j;
+
+        if (!j.accept(file)) return log_config("Invalid config json data\n");
+
+        file.seekg(0);
+        file >> j;
+
+        *this = j.template get<ConfigData>();
+
+        log_config("Loaded config data json\n");
+
+        return 0;
+    }
+    
+    int save_config() {
+        if (!config_data_file.size()) return log_config("No path for config data\n");
+
+        std::ofstream file(config_data_file);
+
+        if (!file.is_open()) return log_config("Could not open config data path for saving\n");
+
+        nlohmann::json j = *this;
+
+        file << j;
+
+        log_config("Saved config data json\n");
+
+        return 0;
+    }
+
+    int load_token() {
+        if (token.size()) return 0;
+        if (!token_file.size()) return log_config("No TOKEN file and supplied token in config is undefined\n");
+        std::ifstream file(token_file);
+        if (!file.is_open()) return log_config(std::format("Could not open token_file ({})\n", token_file));
+        std::getline(file, token, '\n');
+        if (!token.size()) return log_config("token length in TOKEN file is 0\n");
+        return 0;
+    }
+
+    ConfigData()
+        :token_file("TOKEN"),
+         token(),
+         config_data_file("config.json"),
+         bot_data_file("data.json"),
+         pool_size(0) { }
+
+    protected:
+
+    int log_config(const std::string &str) {
+        return fprintf(stderr, "%s", str.c_str());
+    }
+};
+
+struct BotDataContainer {
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(BotDataContainer, guilds);
 
     std::map<dpp::snowflake, UserData> users;
-    std::map<dpp::snowflake, GuildData> guilds;
+    std::map<our_snowflake, GuildData> guilds;
     std::map<dpp::snowflake, ChannelData> channels;
+};
 
+struct BotData : public ConfigData, public BotDataContainer {
+    dpp::cluster bot;
+
+    int load_data() {
+        if (!bot_data_file.size()) return log_config("No path for bot data\n");
+
+        std::ifstream file(bot_data_file);
+
+        if (!file.is_open()) return log_config("No bot data found, creating\n");
+
+        nlohmann::json j;
+
+        if (!j.accept(file)) return log_config("Invalid bot data json data\n");
+
+        file.seekg(0);
+        file >> j;
+
+        *(BotDataContainer*)this = j.template get<BotDataContainer>();
+
+        log_config("Loaded bot data json\n");
+
+        return 0;
+    }
+
+    int save_data() {
+        if (!bot_data_file.size()) return log_config("No path for bot data\n");
+
+        std::ofstream file(bot_data_file);
+
+        if (!file.is_open()) return log_config("Could not open bot data path for saving\n");
+
+        nlohmann::json j = *(BotDataContainer*)this;
+
+        file << j;
+
+        log_config("Saved bot data json\n");
+
+        return 0;
+    }
+};
+
+struct Program : public BotData {
     std::function<void(const dpp::confirmation_callback_t&)> confirmation_handler;
     std::function<void(const dpp::ready_t&)> ready_handler;
     std::function<void(const dpp::slashcommand_t&)> slashcommand_handler;
@@ -220,9 +409,11 @@ struct Program {
             if (this->init())
                 return -1;
 
-        auto token = load_token();
+        load_config();
+        load_data();
 
-        if (token.size() < 1) handle_error("No token in TOKEN file");
+        if (load_token())
+            handle_error("No token supplied");
 
         new (&bot) dpp::cluster(token, dpp::i_guilds | dpp::i_default_intents | dpp::i_guild_members | dpp::i_message_content);
 
@@ -238,13 +429,19 @@ struct Program {
         return 0;
     }
 
+    virtual int save() {
+        save_data();
+
+        return 0;
+    }
+
     virtual int run() {
         if (!did_load)
             if (this->load())
                 return -1;
 
         bot.start(dpp::st_wait);
-
+        save();
         return 0;
     }
 
@@ -260,16 +457,6 @@ struct Program {
     virtual void hint_exit() {
         logs("Terminating");
         bot.terminating = true;
-    }
-
-    std::string load_token(const char *filepath = nullptr) {
-        auto path = filepath;
-        if (!path) path = "TOKEN";
-        auto file = std::ifstream(path, std::ios::in);
-        if (!file.is_open()) return "";
-        std::string ret;
-        std::getline(file, ret, '\n');
-        return ret;
     }
 
     #pragma GCC diagnostic ignored "-Wformat-security"
@@ -329,19 +516,21 @@ struct Program {
         log("Cached user    [%lu] (%s) %s\n", id, name.c_str(), display.c_str());
     }
 
-    virtual void guild_added(std::pair<const dpp::snowflake, GuildData> &pair) {
+    virtual void guild_added(std::pair<const our_snowflake, GuildData> &pair) {
         auto &data = pair.second;
         auto &guild = data.cached;
 
         auto id = data.id = guild.id;
         auto name = data.name = guild.name;
 
-        auto *welcome_channel = data.welcome_channel = get_guild_channel(&data, guild.system_channel_id);
-        
+        auto *welcome_channel = get_guild_channel(&data, guild.system_channel_id);
+
         log("Cached guild   [%lu] %s\n", id, name.c_str());
 
-        if (welcome_channel)
+        if (welcome_channel) {
+            data.welcome_channel = welcome_channel->id;
             log("\twelcome_channel [%lu] %s\n", welcome_channel->id, welcome_channel->name.c_str());
+        }
     }
 
     virtual void channel_added(std::pair<const dpp::snowflake, ChannelData> &pair) {
@@ -373,15 +562,27 @@ struct Program {
     }
 
     GuildChannelData *get_guild_channel(GuildData *guild, const dpp::snowflake channel_id) {
+        assert(guild && "guild is null\n");
         if (!guild->channels.contains(channel_id))
             add_guild_channel(guild, channel_id);
         return util::get_or_null(guild->channels, channel_id);
     }
 
     GuildUserData *get_guild_user(GuildData *guild, const dpp::snowflake user_id) {
+        assert(guild && "guild is null\n");
         if (!guild->users.contains(user_id))
             add_guild_user(guild->id, user_id);
         return util::get_or_null(guild->users, user_id);
+    }
+
+    GuildRoleData *get_guild_role(GuildData *guild, const dpp::snowflake role_id) {
+        assert(guild && "guild is null\n");
+        return guild->get_role(role_id);
+    }
+
+    GuildRoleData *get_guild_role(GuildData *guild, const std::string &role_name) {
+        assert(guild && "guild is null\n");
+        return guild->get_role(role_name);
     }
 
     ChannelData *get_channel(const dpp::snowflake channel_id) {
@@ -445,11 +646,13 @@ struct Program {
     }
 
     void add_guild_channel(GuildData *guild_data, ChannelData *channel_data, const dpp::snowflake &channel_id) {
+        assert(guild_data && "guild_data is null\n");
         assert(channel_id && "channel_id should not be 0 here\n");
-        guild_channel_added(*guild_data->channels.emplace(std::make_pair(channel_id, GuildChannelData(guild_data, channel_data))).first);
+        guild_channel_added(*guild_data->channels.emplace(std::make_pair(our_snowflake(channel_id), GuildChannelData(guild_data, channel_data))).first);
     }
 
     void add_guild_channel(GuildData *guild, const dpp::snowflake &channel_id) {
+        assert(guild && "guild is null\n");
         if (!channel_id) {
             logs("Channel id is 0");
             return;
@@ -647,7 +850,7 @@ struct Program {
         log("Cached guild user [%lu] %s");
 
         if (guild_data->welcome_channel) {
-            message_create(create_welcome_message(user.get_mention(), guild_data->welcome_channel->id));
+            message_create(create_welcome_message(user.get_mention(), guild_data->welcome_channel));
         } else {
             logs("No verification channel");
         }
