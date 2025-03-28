@@ -88,7 +88,7 @@ namespace util {
 }
 
 struct UserData;
-struct RoleData;
+struct GuildRoleData;
 struct GuildUserData;
 struct GuildData;
 
@@ -103,16 +103,18 @@ struct UserData {
     UserData(const dpp::user &user):cached(user) { }
 };
 
-struct RoleData {
+struct GuildRoleData {
     dpp::role cached;
+
+    GuildData *guild;
 
     dpp::snowflake id;
     std::string name;
 
-    RoleData():id(0) {}
-    RoleData(const dpp::role &role):cached(role) { }
+    GuildRoleData():id(0),guild(0) {}
+    GuildRoleData(GuildData *guild, const dpp::role &role):guild(guild),cached(role) { }
 
-    friend bool operator==(const RoleData &a, const std::string &b) {
+    friend bool operator==(const GuildRoleData &a, const std::string &b) {
         return a.name == b;
     }
 };
@@ -153,7 +155,7 @@ struct GuildChannelData {
 struct GuildData {
     dpp::guild cached;
 
-    std::map<dpp::snowflake, RoleData> roles;
+    std::map<dpp::snowflake, GuildRoleData> roles;
     std::map<dpp::snowflake, GuildUserData> users;
     std::map<dpp::snowflake, GuildChannelData> channels;
 
@@ -163,7 +165,7 @@ struct GuildData {
     std::string name;
     dpp::snowflake id;
 
-    RoleData* get_role(const std::string &text) {
+    GuildRoleData* get_role(const std::string &text) {
         return util::get_by_value_or_null(roles, text);
     }
 
@@ -192,9 +194,12 @@ struct Program {
     std::function<void(const dpp::guild_member_add_t&)> guild_user_add_handler;
     std::function<void(const dpp::message_create_t&)> message_handler;
     std::function<void(const dpp::button_click_t&)> button_click_handler;
-    
+
     std::function<void(int)> signal_handler;
     
+    bool did_init = false;
+    bool did_load = false;
+
     Program() { }
 
     virtual int init() {
@@ -206,11 +211,14 @@ struct Program {
         slashcommand_handler = std::bind(&Program::handle_slashcommand, this, std::placeholders::_1);
         signal_handler = std::bind(&Program::handle_signal, this, std::placeholders::_1);
 
+        did_init = true;
         return 0;
     }
 
     virtual int load() {
-        this->init();
+        if (!did_init)
+            if (this->init())
+                return -1;
 
         auto token = load_token();
 
@@ -226,21 +234,32 @@ struct Program {
 
         logs("Connecting");
 
+        did_load = true;
         return 0;
     }
 
-    int run() {
+    virtual int run() {
+        if (!did_load)
+            if (this->load())
+                return -1;
+
         bot.start(dpp::st_wait);
+
         return 0;
     }
 
-    void safe_exit(int errcode = 0) {
+    virtual void safe_exit(int errcode = 0) {
         exit(errcode);
     }
 
-    void handle_error(const char *error, int errcode = -1) {
+    virtual void handle_error(const char *error, int errcode = -1) {
         fprintf(stderr, "Error: %s\n", error);
         safe_exit(errcode);
+    }
+
+    virtual void hint_exit() {
+        logs("Terminating");
+        bot.terminating = true;
     }
 
     std::string load_token(const char *filepath = nullptr) {
@@ -253,10 +272,12 @@ struct Program {
         return ret;
     }
 
+    #pragma GCC diagnostic ignored "-Wformat-security"
     template<typename ...Args>
-    int log(const char *format, Args &&... args) {
-        return fprintf(stderr, format, std::forward<Args>(args)...);
+    constexpr __attribute__((always_inline)) int log(const char* __restrict format, Args &&... args) const {
+        return std::fprintf(stderr, format, std::forward<Args>(args)...);
     }
+    #pragma GCC diagnostic warning "-Wformat-security"
 
     int logs(const char *str) {
         return log("%s\n", str);
@@ -347,7 +368,7 @@ struct Program {
         log("Cached gchannel %p %p\n", data.guild, data.channel);
     }
 
-    virtual void role_added(std::pair<const dpp::snowflake, RoleData> &pair) {
+    virtual void role_added(std::pair<const dpp::snowflake, GuildRoleData> &pair) {
 
     }
 
@@ -654,9 +675,9 @@ struct Program {
         if (id == "verify_button") on_user_verify(e);
     }
 
-    void handle_signal(int sig) {
+    virtual void handle_signal(int sig) {
         log("\nSignal %i received\n", sig);
-        bot.terminating = true;
+        this->hint_exit();
     }
 
     virtual void on_user_verify(const dpp::button_click_t &e) {
@@ -736,9 +757,8 @@ struct Program {
 };
 
 int main() {
-    using namespace dpp;
-
     static Program prog;
+
     prog.load();    
     signal(SIGINT, [](int i){ prog.signal_handler(i); });
 
