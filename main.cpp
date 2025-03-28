@@ -183,8 +183,9 @@ struct Program {
     std::map<dpp::snowflake, UserData> users;
     std::map<dpp::snowflake, GuildData> guilds;
     std::map<dpp::snowflake, ChannelData> channels;
-    dpp::command_completion_event_t complete_handler;
+    dpp::command_completion_event_t confirmation_handler;
     std::function<void(const dpp::ready_t&)> ready_handler;
+    std::function<void(const dpp::slashcommand_t&)> slashcommand_handler;
     std::function<void(const dpp::guild_member_add_t&)> guild_user_add_handler;
     std::function<void(const dpp::message_create_t&)> message_handler;
     std::function<void(const dpp::button_click_t&)> button_click_handler;
@@ -193,11 +194,12 @@ struct Program {
     Program() { }
 
     virtual int init() {
-        complete_handler = std::bind(&Program::handle_confirm, this, std::placeholders::_1);
+        confirmation_handler = std::bind(&Program::handle_confirm, this, std::placeholders::_1);
         ready_handler = std::bind(&Program::handle_ready, this, std::placeholders::_1);
         guild_user_add_handler = std::bind(&Program::handle_guild_user_add, this, std::placeholders::_1);
         message_handler = std::bind(&Program::handle_message, this, std::placeholders::_1);
         button_click_handler = std::bind(&Program::handle_button_click, this, std::placeholders::_1);
+        slashcommand_handler = std::bind(&Program::handle_slashcommand, this, std::placeholders::_1);
 
         return 0;
     }
@@ -215,6 +217,7 @@ struct Program {
         bot.on_guild_member_add(guild_user_add_handler);
         bot.on_message_create(message_handler);
         bot.on_button_click(button_click_handler);
+        bot.on_slashcommand(slashcommand_handler);
 
         logs("Connecting");
 
@@ -518,7 +521,7 @@ struct Program {
 
     void message_create(const dpp::message &m) {
         //logs(m.content);
-        bot.message_create(m, complete_handler);
+        bot.message_create(m, confirmation_handler);
     }
 
     int handle_apierror(const dpp::error_info &e, std::string extra = "") {
@@ -536,9 +539,55 @@ struct Program {
         return 0;
     }
 
+    void handle_slashcommand(const dpp::slashcommand_t &e) {
+        auto &command = e.command;
+        const std::string name = command.get_command_name();
+        auto &channel = command.channel;
+        auto &channel_id = command.channel_id;
+
+        if (name == "help") {
+            e.reply(dpp::message()
+                    .set_channel_id(channel_id)
+                    .set_flags(dpp::m_ephemeral)
+                    .add_embed(
+                    dpp::embed()
+                    .set_color(dpp::colors::sti_blue)
+                    .set_author("TEST", bot.me.get_url(), bot.me.get_avatar_url())
+                    .set_description("NO HELP FOR YOU")
+                    ),
+                confirmation_handler
+            );
+        }
+
+        if (name == "setup") {
+            e.reply(dpp::message()
+                    .set_channel_id(channel_id)
+                    .set_flags(dpp::m_ephemeral)
+                    .add_embed(
+                    dpp::embed()
+                    .set_color(dpp::colors::sti_blue)
+                    .set_author("CONFIGURE", bot.me.get_url(), bot.me.get_avatar_url())
+                    .set_description("Configure bot functions on this server")
+                    ),
+                confirmation_handler
+            );
+        }
+    }
+
     void handle_ready(const dpp::ready_t &r) {
         logs("Connected");
+        bot.set_presence(dpp::presence(dpp::ps_idle, dpp::activity(dpp::activity_type::at_custom, "Test", "state", "")));
 
+        using sc = dpp::slashcommand;
+
+        sc setup("setup", "Admin set up", bot.me.id);
+        sc help("help", "Get bot help", bot.me.id);
+
+        std::vector<sc> commands = { setup, help };
+
+        if (!commands.empty())    
+            bot.global_bulk_command_create(commands, confirmation_handler);
+    
         bot.current_user_get_guilds([&](dpp::confirmation_callback_t e) {
             if (e.is_error()) { handle_apierror(e.get_error()); return; }
 
@@ -622,7 +671,7 @@ struct Program {
     void add_role(dpp::snowflake guild, dpp::snowflake user, dpp::snowflake role) {
         log("Adding role %lu to user %lu in guild %lu\n", role, user, guild);
 
-        bot.guild_member_add_role(guild, user, role, complete_handler);
+        bot.guild_member_add_role(guild, user, role, confirmation_handler);
     }
 
     void create_role(dpp::snowflake guild, dpp::snowflake user, std::string role_name) {
