@@ -805,7 +805,7 @@ struct Program : public BotData {
 
     void handle_ready(const dpp::ready_t &r) {
         logs("Connected");
-        bot.set_presence(dpp::presence(dpp::ps_idle, dpp::activity(dpp::activity_type::at_custom, "Test", "state", "")));
+        bot.set_presence(dpp::presence(dpp::ps_idle, dpp::activity(dpp::activity_type::at_custom, ".", "Use /", "")));
 
         using sc = dpp::slashcommand;
 
@@ -817,17 +817,38 @@ struct Program : public BotData {
         if (!commands.empty())    
             bot.global_bulk_command_create(commands, confirmation_handler);
     
-        bot.current_user_get_guilds([&](dpp::confirmation_callback_t e) {
-            if (e.is_error()) { handle_apierror(e.get_error()); return; }
+        {
+        util::auto_wait w;
+        bot.current_user_get_guilds([&](dpp::confirmation_callback_t e) -> dpp::task <void> {
+            util::hold h(w);
+            if (e.is_error()) { handle_apierror(e.get_error()); co_return; }
 
             auto &guildmap = std::get<dpp::guild_map>(e.value);
             
             log("Handling %lu guilds\n", guildmap.size());
 
             std::for_each(guildmap.begin(), guildmap.end(), [&](auto &pair){ 
-                add_guild(pair.first); // dpp::guild_map is returned incomplete, make a full request for guild data
+                //add_guild(pair.first); // dpp::guild_map is returned incomplete, make a full request for guild data
+                auto guild_id = pair.first;
+                GuildData *cached = get_guild(guild_id);
+
+                if (!cached || !cached->id) {
+                    add_guild(pair.first);
+                    return;
+                }
+                
+                log("Found guild    [%lu] %s\n", cached->id, cached->name.c_str());
             });
+
+            co_return;
         });
+        }
+
+        bot.start_timer([&](const dpp::timer& h) {
+            save();
+        }, 300);
+
+        logs("Ready");
     }
 
     void handle_guild_user_add(const dpp::guild_member_add_t &e) {
