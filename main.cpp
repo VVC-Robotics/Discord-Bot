@@ -10,6 +10,7 @@
 #include <format>
 #include <mutex>
 #include <condition_variable>
+#include <signal.h>
 
 #include <dpp/dpp.h>
 
@@ -180,17 +181,20 @@ struct GuildData {
 
 struct Program {
     dpp::cluster bot;
+
     std::map<dpp::snowflake, UserData> users;
     std::map<dpp::snowflake, GuildData> guilds;
     std::map<dpp::snowflake, ChannelData> channels;
-    dpp::command_completion_event_t confirmation_handler;
+
+    std::function<void(const dpp::confirmation_callback_t&)> confirmation_handler;
     std::function<void(const dpp::ready_t&)> ready_handler;
     std::function<void(const dpp::slashcommand_t&)> slashcommand_handler;
     std::function<void(const dpp::guild_member_add_t&)> guild_user_add_handler;
     std::function<void(const dpp::message_create_t&)> message_handler;
     std::function<void(const dpp::button_click_t&)> button_click_handler;
-    using completion_callback = std::function<void()>;
-
+    
+    std::function<void(int)> signal_handler;
+    
     Program() { }
 
     virtual int init() {
@@ -200,6 +204,7 @@ struct Program {
         message_handler = std::bind(&Program::handle_message, this, std::placeholders::_1);
         button_click_handler = std::bind(&Program::handle_button_click, this, std::placeholders::_1);
         slashcommand_handler = std::bind(&Program::handle_slashcommand, this, std::placeholders::_1);
+        signal_handler = std::bind(&Program::handle_signal, this, std::placeholders::_1);
 
         return 0;
     }
@@ -649,6 +654,11 @@ struct Program {
         if (id == "verify_button") on_user_verify(e);
     }
 
+    void handle_signal(int sig) {
+        log("\nSignal %i received\n", sig);
+        bot.terminating = true;
+    }
+
     virtual void on_user_verify(const dpp::button_click_t &e) {
         auto &command = e.command;
         if (!command.is_guild_interaction()) {
@@ -728,8 +738,9 @@ struct Program {
 int main() {
     using namespace dpp;
 
-    Program prog;
+    static Program prog;
     prog.load();    
+    signal(SIGINT, [](int i){ prog.signal_handler(i); });
 
     return prog.run();
 }
