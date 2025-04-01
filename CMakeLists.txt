@@ -17,20 +17,24 @@ add_executable(${PROGRAM_NAME}
 )
 
 find_path(DPP_INCLUDE_DIR dpp/dpp.h)
+find_path(FMT_INCLUDE_DIR fmt/format.h)
 
 find_library(DPP_LIBRARY dpp)
+find_library(FMT_LIBRARY fmt)
 
 target_include_directories(${PROJECT_NAME} PUBLIC 
     ${PROGRAM_INCLUDE_DIR}
     ${DPP_INCLUDE_DIR}
+    ${FMT_INCLUDE_DIR}
 )
 
 target_link_libraries(${PROJECT_NAME}
     ${DPP_LIBRARY}
+    ${FMT_LIBRARY}
 )
 
 target_compile_options(${PROJECT_NAME} PUBLIC
-    -g
+    -g -Wno-format
 )
 
 configure_file(${PROGRAM_COPY_FILES} ${PROGRAM_COPY_FILES} COPYONLY)

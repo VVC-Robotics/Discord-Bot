@@ -7,10 +7,10 @@
 #include <algorithm>
 #include <stdio.h>
 #include <fstream>
-#include <format>
 #include <mutex>
 #include <condition_variable>
 #include <signal.h>
+#include <fmt/format.h>
 
 #include <dpp/json.h>
 #include <dpp/export.h>
@@ -307,7 +307,7 @@ struct ConfigData {
         if (token.size()) return 0;
         if (!token_file.size()) return log_config("No TOKEN file and supplied token in config is undefined\n");
         std::ifstream file(token_file);
-        if (!file.is_open()) return log_config(std::format("Could not open token_file ({})\n", token_file));
+        if (!file.is_open()) return log_config(fmt::format("Could not open token_file ({})\n", token_file));
         std::getline(file, token, '\n');
         if (!token.size()) return log_config("token length in TOKEN file is 0\n");
         return 0;
@@ -704,7 +704,7 @@ struct Program : public BotData {
         bot.guild_get_member(guild_id, user_id, [&,guild_id,user_id](dpp::confirmation_callback_t e) {
             util::hold h(w);
             if (e.is_error()) { 
-                handle_apierror(e.get_error(), std::format("guild: {} user: {}", (uint64_t)guild_id, (uint64_t)user_id));
+                handle_apierror(e.get_error(), fmt::format("guild: {} user: {}", (uint64_t)guild_id, (uint64_t)user_id));
                 return;
             }
 
@@ -718,7 +718,7 @@ struct Program : public BotData {
         bot.guild_get(guild_id, [&,guild_id](dpp::confirmation_callback_t e) {
             util::hold h(w);
             if (e.is_error()) { 
-                handle_apierror(e.get_error(), std::format("guild: {}", (uint64_t)guild_id));
+                handle_apierror(e.get_error(), fmt::format("guild: {}", (uint64_t)guild_id));
                 return;
             }
 
@@ -732,7 +732,7 @@ struct Program : public BotData {
         bot.user_get(user_id, [&,user_id](dpp::confirmation_callback_t e) {
             util::hold h(w); 
             if (e.is_error()) { 
-                handle_apierror(e.get_error(), std::format("user: {}", (uint64_t)user_id));
+                handle_apierror(e.get_error(), fmt::format("user: {}", (uint64_t)user_id));
                 return;
             }
 
@@ -745,7 +745,7 @@ struct Program : public BotData {
         bot.channel_get(channel_id, [&,channel_id](dpp::confirmation_callback_t e) {
             util::hold h(w);
             if (e.is_error()) { 
-                handle_apierror(e.get_error(), std::format("channel: {}", (uint64_t)channel_id));
+                handle_apierror(e.get_error(), fmt::format("channel: {}", (uint64_t)channel_id));
                 return;
             }
 
@@ -925,7 +925,7 @@ struct Program : public BotData {
         }
 
         add_or_create_role(guild_user, "Verified");
-        e.reply(dpp::ir_update_message, std::format("You are now verified {}!", user.get_mention()));
+        e.reply(dpp::ir_update_message, fmt::format("You are now verified {}!", user.get_mention()));
     }
 
     void add_role(dpp::snowflake guild, dpp::snowflake user, dpp::snowflake role) {
