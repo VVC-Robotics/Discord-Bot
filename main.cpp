@@ -376,6 +376,9 @@ struct BotData : public ConfigData, public BotDataContainer {
     }
 };
 
+#undef log
+#define log(format, ...) fprintf(stderr, format __VA_OPT__(,) __VA_ARGS__)
+
 struct Program : public BotData {
     std::function<void(const dpp::confirmation_callback_t&)> confirmation_handler;
     std::function<void(const dpp::ready_t&)> ready_handler;
@@ -459,12 +462,14 @@ struct Program : public BotData {
         bot.terminating = true;
     }
 
+    /*
     #pragma GCC diagnostic ignored "-Wformat-security"
     template<typename ...Args>
     constexpr __attribute__((always_inline)) int log(const char* __restrict format, Args &&... args) const {
         return std::fprintf(stderr, format, std::forward<Args>(args)...);
     }
     #pragma GCC diagnostic warning "-Wformat-security"
+    */
 
     int logs(const char *str) {
         return log("%s\n", str);
