@@ -779,45 +779,105 @@ struct Program : public BotData {
         auto &channel = command.channel;
         auto &channel_id = command.channel_id;
 
+        auto base_message = dpp::message()
+                                .set_channel_id(channel_id);
+
+        auto base_embed = dpp::embed()
+                                .set_color(dpp::colors::sti_blue)
+                                .set_author("Club Robot", bot.me.get_url(), bot.me.get_avatar_url());
+
+        if (!command.is_guild_interaction()) {
+            e.reply(base_message.set_content("I only support commands on servers right now"));
+            return;
+        }
+
+        auto *guild = get_guild(command.guild_id);
+
+        if (!guild) {
+            e.reply(base_message.set_content("An error occured!"));
+            return;
+        }
+
+        bool guild_ephemeral = guild->interact_ephemeral;
+
+        if (guild_ephemeral)
+            base_message = base_message.set_flags(dpp::m_ephemeral);
+
         if (name == "help") {
-            e.reply(dpp::message()
-                    .set_channel_id(channel_id)
-                    .set_flags(dpp::m_ephemeral)
+            e.reply(base_message
                     .add_embed(
-                    dpp::embed()
-                    .set_color(dpp::colors::sti_blue)
-                    .set_author("TEST", bot.me.get_url(), bot.me.get_avatar_url())
-                    .set_description("NO HELP FOR YOU")
+                    base_embed
+                    .set_description("Verification bot")
                     ),
                 confirmation_handler
             );
+            return;
         }
 
         if (name == "setup") {
-            e.reply(dpp::message()
-                    .set_channel_id(channel_id)
-                    .set_flags(dpp::m_ephemeral)
+            e.reply(base_message
                     .add_embed(
-                    dpp::embed()
-                    .set_color(dpp::colors::sti_blue)
-                    .set_author("CONFIGURE", bot.me.get_url(), bot.me.get_avatar_url())
+                    base_embed
                     .set_description("Configure bot functions on this server")
                     ),
                 confirmation_handler
             );
+            return;
+        }
+
+        if (name == "info") {
+            e.reply(base_message.set_content("Information"));
+            return;
+        }
+
+        if (name == "verify") {
+            e.reply(base_message.set_content("Verification"));
+            return;
         }
     }
 
     void handle_ready(const dpp::ready_t &r) {
         logs("Connected");
-        bot.set_presence(dpp::presence(dpp::ps_idle, dpp::activity(dpp::activity_type::at_custom, ".", "Use /", "")));
+        bot.set_presence(dpp::presence(dpp::ps_online, dpp::activity(dpp::activity_type::at_custom, ".", "Use /", "")));
 
         using sc = dpp::slashcommand;
+        using co = dpp::command_option;
+        auto csc = dpp::co_sub_command;
 
         sc setup("setup", "Admin set up", bot.me.id);
-        sc help("help", "Get bot help", bot.me.id);
+        sc help("help", "Get help", bot.me.id);
+        sc verify("verify", "Verification", bot.me.id);
+        sc info("info", "Get info", bot.me.id);
 
-        std::vector<sc> commands = { setup, help };
+        std::vector<co> setup_ops = {
+            co(csc, "visibility", "Set the visibility of my replies"),
+            co(csc, "welcome_channel", "Set the welcome channel"),
+            co(csc, "role", "Set role that can use bot")
+        };
+
+        std::vector<co> verify_ops = {
+            co(csc, "all", "Set all members as verified"),
+            co(csc, "none", "Clear verification status of all members"),
+            co(csc, "set", "Set user as verified"),
+            co(csc, "clear", "Clear verification of user"),
+            co(csc, "role", "Set verification role")
+        };
+
+        std::vector<co> info_ops = {
+            co(csc, "server", "Get current server config"),
+            co(csc, "bot", "Get bot info")
+        };
+
+        auto add_ops = [](auto &v, auto &ops) {
+            for (auto &c : ops)
+                v.add_option(c);
+        };
+
+        add_ops(setup, setup_ops);
+        add_ops(verify, verify_ops);
+        add_ops(info, info_ops);
+
+        std::vector<sc> commands = { setup, help, verify, info };
 
         if (!commands.empty())    
             bot.global_bulk_command_create(commands, confirmation_handler);
