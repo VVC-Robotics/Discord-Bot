@@ -773,18 +773,35 @@ struct Program : public BotData {
         return 0;
     }
 
+    template<typename T>
+    std::string or_default(T *v) {
+        if (!v) {
+            return "`Not set`";
+        }
+        return v->cached.get_mention();
+    }
+
     void handle_slashcommand(const dpp::slashcommand_t &e) {
         auto &command = e.command;
         const std::string name = command.get_command_name();
+        auto interaction = command.get_command_interaction();
+        auto &ops = interaction.options;
         auto &channel = command.channel;
         auto &channel_id = command.channel_id;
+        auto argc = ops.size();
 
         auto base_message = dpp::message()
                                 .set_channel_id(channel_id);
 
         auto base_embed = dpp::embed()
                                 .set_color(dpp::colors::sti_blue)
-                                .set_author("Club Robot", bot.me.get_url(), bot.me.get_avatar_url());
+                                ;//.set_author("Club Robot", bot.me.get_url(), bot.me.get_avatar_url());
+
+        auto base_moreargs = dpp::message(base_message).add_embed(dpp::embed(base_embed).set_description("More arguments required"));
+
+        auto make_base = [&base_message, &base_embed](const std::string_view &str) {
+            return base_message.add_embed(base_embed.set_description(str));
+        };
 
         if (!command.is_guild_interaction()) {
             e.reply(base_message.set_content("I only support commands on servers right now"));
@@ -802,6 +819,11 @@ struct Program : public BotData {
 
         if (guild_ephemeral)
             base_message = base_message.set_flags(dpp::m_ephemeral);
+
+        if (argc < 1) {
+            e.reply(base_moreargs);
+            return;
+        }
 
         if (name == "help") {
             e.reply(base_message
@@ -826,7 +848,33 @@ struct Program : public BotData {
         }
 
         if (name == "info") {
-            e.reply(base_message.set_content("Information"));
+            auto *welcome_channel = get_guild_channel(guild, guild->welcome_channel);
+            if (ops[0].name == "server") {
+                e.reply(base_message.add_embed(base_embed.set_description(
+                    fmt::format("\
+Verification role \n\
+{} \n\
+Welcome channel \n\
+{} \n\
+Hide messages \n\
+`{}` \
+", 
+or_default(get_guild_role(guild, guild->verify_role)),
+welcome_channel ? or_default(welcome_channel->channel) : "`Not set`",
+guild->interact_ephemeral
+                    )
+                )));
+                return;
+            }
+            if (ops[0].name == "bot") {
+                e.reply(make_base("\
+Verification bot cortesy of VVC Robotics \n\
+https://github.com/VVC-Robotics/Discord-Bot \
+"
+));
+                return;
+            }
+            e.reply(base_moreargs);
             return;
         }
 
