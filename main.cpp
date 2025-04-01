@@ -215,7 +215,7 @@ struct GuildChannelData {
 };
 
 struct GuildData {
-    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(GuildData, id, name, verify_ephemeral, interact_ephemeral, welcome_channel, verify_role);
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(GuildData, id, name, verify_ephemeral, interact_ephemeral, welcome_channel, verify_role, bot_operator_role);
 
     dpp::guild cached;
 
@@ -225,6 +225,7 @@ struct GuildData {
 
     our_snowflake welcome_channel;
     our_snowflake verify_role;
+    our_snowflake bot_operator_role;
 
     bool verify_ephemeral;
     bool interact_ephemeral;
@@ -562,6 +563,19 @@ struct Program : public BotData {
         log("Cached gchannel %p %p\n", data.guild, data.channel);
     }
 
+    virtual void guild_role_added(std::pair<const dpp::snowflake, GuildRoleData> &pair) {
+        auto &data = pair.second;
+        auto *guild = data.guild;
+        auto &role = data.cached;
+    
+        assert(guild && "Guild null\n");
+
+        data.id = role.id;
+        data.name = role.name;
+
+        log("Cached grole %p %lu\n", data.guild, data.id);
+    }
+
     virtual void role_added(std::pair<const dpp::snowflake, GuildRoleData> &pair) {
 
     }
@@ -582,7 +596,10 @@ struct Program : public BotData {
 
     GuildRoleData *get_guild_role(GuildData *guild, const dpp::snowflake role_id) {
         assert(guild && "guild is null\n");
-        return guild->get_role(role_id);
+        //return guild->get_role(role_id);
+        if (!guild->roles.contains(role_id))
+            add_guild_role(guild->id, role_id);
+        return util::get_or_null(guild->roles, role_id);
     }
 
     GuildRoleData *get_guild_role(GuildData *guild, const std::string &role_name) {
@@ -650,6 +667,11 @@ struct Program : public BotData {
         guild_user_added(*guild_data->users.emplace(std::make_pair(user_id, GuildUserData(user_data, guild_data, guild_member))).first);
     }
 
+    void add_guild_role(GuildData *guild_data, const dpp::snowflake &role_id, dpp::role &guild_role) {
+        assert(role_id && "role_id should not be 0 here\n");
+        guild_role_added(*guild_data->roles.emplace(std::make_pair(role_id, GuildRoleData(guild_data, guild_role))).first);
+    }
+
     void add_guild_channel(GuildData *guild_data, ChannelData *channel_data, const dpp::snowflake &channel_id) {
         assert(guild_data && "guild_data is null\n");
         assert(channel_id && "channel_id should not be 0 here\n");
@@ -696,6 +718,24 @@ struct Program : public BotData {
 
     void add_guild(std::pair<const dpp::snowflake, dpp::guild> &pair) {
         add_guild(pair.first, pair.second);
+    }
+
+    void add_guild_role(const dpp::snowflake guild_id, const dpp::snowflake role_id) {
+        util::auto_wait w;
+        auto *guild = get_guild(guild_id);
+        if (!guild) return;
+        bot.roles_get(guild_id, [&,guild_id,role_id](dpp::confirmation_callback_t e) {
+            util::hold h(w);
+            if (e.is_error()) {
+                handle_apierror(e.get_error(), fmt::format("guild: {} getroles", (uint64_t)guild_id));
+                return;
+            }
+            
+            auto &roles = std::get<dpp::role_map>(e.value);
+            for (auto &r : roles) {
+                add_guild_role(guild, r.first, r.second);
+            }
+        });
     }
 
     void add_guild_user(const dpp::snowflake guild_id, const dpp::snowflake user_id) {
@@ -774,9 +814,9 @@ struct Program : public BotData {
     }
 
     template<typename T>
-    std::string or_default(T *v) {
+    std::string or_default(T *v, std::string or_str = "`Not set`") {
         if (!v) {
-            return "`Not set`";
+            return or_str;
         }
         return v->cached.get_mention();
     }
@@ -817,6 +857,11 @@ struct Program : public BotData {
 
         bool guild_ephemeral = guild->interact_ephemeral;
 
+        {
+            //util::auto_wait w;
+            //e.thinking(guild_ephemeral, [&w](const auto &d){w.notify();});
+        }
+
         if (guild_ephemeral)
             base_message = base_message.set_flags(dpp::m_ephemeral);
 
@@ -837,13 +882,33 @@ struct Program : public BotData {
         }
 
         if (name == "setup") {
-            e.reply(base_message
-                    .add_embed(
-                    base_embed
-                    .set_description("Configure bot functions on this server")
-                    ),
-                confirmation_handler
-            );
+            if (ops[0].name == "role") {
+                auto crole = std::get<dpp::snowflake>(e.get_parameter("role"));
+                auto *role = get_guild_role(guild, crole);
+                if (!role) {
+                    e.reply(make_base(fmt::format("Failed to set role to {}", crole)));
+                    return;
+                }
+                guild->bot_operator_role = crole;
+                e.reply(make_base(fmt::format("Set bot operator role to {}", or_default(role, role->name))));
+                return;
+            }
+            if (ops[0].name == "visibility") {
+                auto cvisi = std::get<bool>(e.get_parameter("visibility"));
+                guild->interact_ephemeral = !cvisi;
+                e.reply(make_base(fmt::format("Set reply visibility to `{}`", cvisi)));
+                return;
+            }
+            if (ops[0].name == "welcome_channel") {
+                auto cchan = std::get<dpp::snowflake>(e.get_parameter("welcome_channel"));
+                auto *chan = get_guild_channel(guild, cchan);
+                if (!chan) {
+                    e.reply(make_base(fmt::format("Failed to set welcome channel to {}", cchan)));
+                    return;
+                }
+                e.reply(make_base(fmt::format("Set welcome channel to {}", or_default(chan->channel, chan->name))));
+                return;
+            }
             return;
         }
 
@@ -879,9 +944,53 @@ https://github.com/VVC-Robotics/Discord-Bot \
         }
 
         if (name == "verify") {
-            e.reply(base_message.set_content("Verification"));
+            if (ops[0].name == "role") {
+                auto crole = std::get<dpp::snowflake>(e.get_parameter("role"));
+                auto *role = get_guild_role(guild, crole);
+                if (!role) {
+                    e.reply(make_base(fmt::format("Failed to set role to {}", crole)));
+                    return;
+                }
+                guild->verify_role = crole;
+                e.reply(make_base(fmt::format("Set bot operator role to {}", or_default(role, role->name))));
+                return;
+            }
+            if (ops[0].name == "user") {
+                auto *vrole = get_guild_role(guild, guild->verify_role);
+                dpp::snowflake vroleid = vrole ? vrole->id : dpp::snowflake(0);
+                auto cuser = std::get<dpp::snowflake>(e.get_parameter("set"));
+                auto *user = get_guild_user(guild, cuser);
+                if (!user || !ops[0].options.size()) {
+                    e.reply(make_base(fmt::format("Failed to set user's role {}", cuser)));
+                    return;
+                }
+                if (ops[0].name == "set") {
+                    if (vroleid)
+                        add_role(guild->id, cuser, vroleid);
+                    else
+                        add_or_create_role(guild->id, cuser, "Verified");
+                    e.reply(make_base(fmt::format("Set {} as verified", or_default(user->user, user->user->username))));
+                    return;
+                }
+                if (ops[1].name == "clear") {
+                    if (!vroleid) {
+                        auto *t = guild->get_role("Verified");
+                        if (t) vroleid = t->id;
+                    }
+                    if (!vroleid) {
+                        e.reply(make_base("No verified role!"));
+                        return;
+                    }
+                    user->cached.remove_role(vroleid);
+                    e.reply(make_base(fmt::format("Cleared verification of {}", or_default(user->user, user->user->username))));
+                    return;
+                }
+            }
             return;
         }
+
+        e.reply(base_moreargs);
+        return;
     }
 
     void handle_ready(const dpp::ready_t &r) {
@@ -890,6 +999,7 @@ https://github.com/VVC-Robotics/Discord-Bot \
 
         using sc = dpp::slashcommand;
         using co = dpp::command_option;
+        using coc = dpp::command_option_choice;
         auto csc = dpp::co_sub_command;
 
         sc setup("setup", "Admin set up", bot.me.id);
@@ -898,17 +1008,18 @@ https://github.com/VVC-Robotics/Discord-Bot \
         sc info("info", "Get info", bot.me.id);
 
         std::vector<co> setup_ops = {
-            co(csc, "visibility", "Set the visibility of my replies"),
-            co(csc, "welcome_channel", "Set the welcome channel"),
-            co(csc, "role", "Set role that can use bot")
+            co(dpp::co_boolean, "visibility", "Set the visibility of my replies"),
+            co(dpp::co_channel, "welcome_channel", "Set the welcome channel"),
+            co(dpp::co_role, "role", "Set bot operator role")
         };
 
         std::vector<co> verify_ops = {
             co(csc, "all", "Set all members as verified"),
             co(csc, "none", "Clear verification status of all members"),
-            co(csc, "set", "Set user as verified"),
-            co(csc, "clear", "Clear verification of user"),
-            co(csc, "role", "Set verification role")
+            co(dpp::co_user, "user", "User options")
+                .add_choice(coc("set", "Set verification"))
+                .add_choice(coc("clear", "Clear verification")),
+            co(dpp::co_role, "role", "Set verification role")
         };
 
         std::vector<co> info_ops = {
