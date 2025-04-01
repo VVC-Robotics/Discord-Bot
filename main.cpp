@@ -1008,7 +1008,7 @@ https://github.com/VVC-Robotics/Discord-Bot \
         sc info("info", "Get info", bot.me.id);
 
         std::vector<co> setup_ops = {
-            co(dpp::co_boolean, "visibility", "Set the visibility of my replies"),
+            co(csc, "visibility", "Set the visibility of my replies"),
             co(dpp::co_channel, "welcome_channel", "Set the welcome channel"),
             co(dpp::co_role, "role", "Set bot operator role")
         };
