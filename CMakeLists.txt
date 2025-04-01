@@ -34,7 +34,7 @@ target_link_libraries(${PROJECT_NAME}
 )
 
 target_compile_options(${PROJECT_NAME} PUBLIC
-    -g -Wno-format
+    -g -Wno-format -Wno-psabi
 )
 
 configure_file(${PROGRAM_COPY_FILES} ${PROGRAM_COPY_FILES} COPYONLY)
